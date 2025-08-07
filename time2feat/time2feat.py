@@ -1,3 +1,6 @@
+import os
+import pickle
+from pickle import UnpicklingError
 from typing import Optional
 
 import pandas as pd
@@ -13,10 +16,20 @@ from time2feat.model.clustering import ClusterWrapper
 
 class Time2Feat(object):
 
-    def __init__(self, n_clusters: Optional[int] = None, batch_size=100, p=1, model_type='KMeans', transform_type='std',
-                 score_mode='simple',
-                 strategy='sk_base',
-                 k_best=False, pre_transform=False, top_k=None, pfa_value=0.9):
+    def __init__(
+        self,
+        n_clusters: Optional[int] = None,
+        batch_size=100,
+        p=1,
+        model_type="KMeans",
+        transform_type="std",
+        score_mode="simple",
+        strategy="sk_base",
+        k_best=False,
+        pre_transform=False,
+        top_k=None,
+        pfa_value=0.9,
+    ):
         """
         Initialize time2feat method with specified parameters.
 
@@ -48,38 +61,84 @@ class Time2Feat(object):
         self.pfa_value = pfa_value
         self.top_feats = list()
         self.top_ext_feats = list()
+        self._df_feats = None
+        self.y_pred = None
+        self.top_feats_variance = None
+        self.top_ext_feats_variance = None
 
-    def fit(self, X, labels=None, external_feat: pd.DataFrame = None, select_external_feat: bool = False):
+    def fit(
+        self,
+        X,
+        labels=None,
+        external_feat: pd.DataFrame = None,
+        select_external_feat: bool = False,
+        save_features_extracted: str = "last_experiment",
+    ):
         if labels is None:
             labels = dict()
-        df_feats = feature_extraction(X, batch_size=self.batch_size, p=self.p)
-        context = {'model_type': self.model_type, 'transform_type': self.transform_type, 'score_mode': self.score_mode,
-                   'strategy': self.strategy, 'k_best': self.k_best, 'pre_transform': self.pre_transform,
-                   'top_k': self.top_k, 'pfa_value': self.pfa_value}
-        top_features = feature_selection(
+
+        path_temp = save_features_extracted
+        print("Sto salvando o usando le Features di: " + path_temp)
+
+        if not os.path.exists(path_temp):
+            df_feats = feature_extraction(X, batch_size=self.batch_size, p=self.p)
+            with open(path_temp, "wb") as f:
+                pickle.dump(df_feats, f)
+        else:
+            try:
+                df_feats = pickle.load(open(path_temp, "rb"))
+            except UnpicklingError:
+                print(
+                    "Error in loading the pickle file. It looks like the file is corrupt. Recomputing the features."
+                )
+                df_feats = feature_extraction(X, batch_size=self.batch_size, p=self.p)
+                with open(path_temp, "wb") as f:
+                    pickle.dump(df_feats, f)
+
+        context = {
+            "model_type": self.model_type,
+            "transform_type": self.transform_type,
+            "score_mode": self.score_mode,
+            "strategy": self.strategy,
+            "k_best": self.k_best,
+            "pre_transform": self.pre_transform,
+            "top_k": self.top_k,
+            "pfa_value": self.pfa_value,
+        }
+
+        top_features_dict = feature_selection(
             df_feats,
             labels=labels,
             context=context,
             external_feat=external_feat,
-            select_external_feat=select_external_feat
+            select_external_feat=select_external_feat,
         )
 
-        if external_feat is not None and select_external_feat:
-            top_feats_ts, top_feats_ext = top_features
-            df_feats = pd.concat([df_feats[top_feats_ts], external_feat[top_feats_ext]], axis=1)
+        top_features = top_features_dict["ts_feats"]
+        top_features_variance = top_features_dict["ts_feats_var"]
+        top_external_features = top_features_dict["ext_feats"]
+        top_external_features_variance = top_features_dict["ext_feats_var"]
 
-            self.top_feats = top_feats_ts
-            self.top_ext_feats = top_feats_ext
+        if external_feat is not None:
+            df_feats = pd.concat(
+                [df_feats[top_features], external_feat[top_external_features]], axis=1
+            )
+            self.top_feats = top_features
+            self.top_ext_feats = top_external_features
         else:
             df_feats = df_feats[top_features]
             self.top_feats = top_features
         """if external_feat is not None:
-            df_feats = pd.concat([df_feats, external_feat], axis=1)"""
+            _df_feats = pd.concat([_df_feats, external_feat], axis=1)"""
 
-        # return df_feats
+        self.top_feats_variance = top_features_variance
+        self.top_ext_feats = top_external_features
+        self.top_ext_feats_variance = top_external_features_variance
+
+        # return _df_feats
 
         # scaler = StandardScaler()
-        # df_standardized = scaler.fit_transform(df_feats)
+        # df_standardized = scaler.fit_transform(_df_feats)
         #
         # # PCA on the selected features
         # pca = PCA()
@@ -99,13 +158,13 @@ class Time2Feat(object):
         # most_important_features = []
         # for component in components:
         #     feature_indices = component.argsort()[-n_components:][::-1]
-        #     most_important_features.extend(df_feats.columns[feature_indices])
+        #     most_important_features.extend(_df_feats.columns[feature_indices])
 
         # Remove duplicates while preserving order
         # most_important_features = list(dict.fromkeys(most_important_features))
 
         # Select the most important features from the DataFrame
-        # df_selected_features = df_feats[most_important_features]
+        # df_selected_features = _df_feats[most_important_features]
 
         # print(f"Selected {n_components} features: {most_important_features}")
 
@@ -122,20 +181,52 @@ class Time2Feat(object):
             # get the variance for the variables
             explained_variance = pca.explained_variance_ratio_
 
-            n_clusters = KneeLocator(np.asarray([(range(len(explained_variance)))]).squeeze(),
-                                     np.asarray(explained_variance).squeeze(),
-                                     curve="convex", direction="decreasing").knee
+            n_clusters = KneeLocator(
+                np.asarray([(range(len(explained_variance)))]).squeeze(),
+                np.asarray(explained_variance).squeeze(),
+                curve="convex",
+                direction="decreasing",
+            ).knee
+
+            self.n_clusters = n_clusters
 
         else:
             n_clusters = self.n_clusters
 
+        self._df_feats = df_feats
+
         return df_feats, n_clusters
 
-    def fit_predict(self, X, labels=None, external_feat: pd.DataFrame = None, select_external_feat: bool = False):
+    def predict(self):
+        model = ClusterWrapper(
+            n_clusters=self.n_clusters,
+            model_type=self.model_type,
+            transform_type=self.transform_type,
+        )
+        self.y_pred = model.fit_predict(self._df_feats)
+        return self.y_pred
+
+    def fit_predict(
+        self,
+        X,
+        labels=None,
+        external_feat: pd.DataFrame = None,
+        select_external_feat: bool = False,
+        save_features_extracted: str = "last_experiment",
+    ):
         if labels is None:
             labels = {}
-        df_feats, n_clusters = self.fit(X, labels, external_feat, select_external_feat=select_external_feat)
-        model = ClusterWrapper(n_clusters=n_clusters, model_type=self.model_type,
-                               transform_type=self.transform_type)
+        df_feats, n_clusters = self.fit(
+            X,
+            labels,
+            external_feat,
+            select_external_feat=select_external_feat,
+            save_features_extracted=save_features_extracted,
+        )
+        model = ClusterWrapper(
+            n_clusters=n_clusters,
+            model_type=self.model_type,
+            transform_type=self.transform_type,
+        )
         y_pred = model.fit_predict(df_feats)
         return y_pred
