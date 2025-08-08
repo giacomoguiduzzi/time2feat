@@ -7,17 +7,18 @@ from tsfresh.feature_selection import relevance
 from tqdm import tqdm
 from sklearn.model_selection import ParameterGrid
 
-from time2feat.selection.PFA import PFA
+from time2feat.time2feat.selection.PFA import PFA
 import warnings
 
-from time2feat.model.preprocessing import apply_transformation
-from time2feat.model.clustering import ClusterWrapper, cluster_metrics
+from time2feat.time2feat.model.preprocessing import apply_transformation
+from time2feat.time2feat.model.clustering import ClusterWrapper, cluster_metrics
 
 
 def feature_selection(df_feats: pd.DataFrame, labels: dict = None, context: dict = None,
                       external_feat: pd.DataFrame = None,
                       select_external_feat: bool = False):
-    df_feats = pd.concat([df_feats, external_feat], axis=1)
+    df_feats = pd.concat([df_feats, external_feat], axis=1) if external_feat is not None else df_feats
+
     if labels:
         train_idx = list(labels.keys())
         test_idx = [i for i in range(len(df_feats)) if i not in train_idx]
@@ -32,17 +33,52 @@ def feature_selection(df_feats: pd.DataFrame, labels: dict = None, context: dict
         top_k = new_params['top_k']
         score_mode = new_params['score_mode']
 
-        top_features = features_scoring_selection(df_train_features, y_train, mode=score_mode, top_k=top_k,
-                                                  strategy=params['strategy'], pfa_values=params['pfa_value'],
-                                                  external_feat=external_feat)
+        result = features_scoring_selection(df_train_features, y_train, mode=score_mode, top_k=top_k,
+                                            strategy=params['strategy'], pfa_values=params['pfa_value'],
+                                            external_feat=external_feat)
     else:
-        # if external_feat and select_external_feat, top_features is a tuple with top_feats_ts and top_feats_ext
-        top_features = features_scoring_selection(df_feats, [], mode='simple', top_k=1,
-                                                  strategy='none', pfa_values=context['pfa_value'],
-                                                  external_feat=external_feat,
-                                                  select_external_feat=select_external_feat)
+        result = features_scoring_selection(df_feats, [], mode='simple', top_k=1,
+                                            strategy='none', pfa_values=context['pfa_value'],
+                                            external_feat=external_feat,
+                                            select_external_feat=select_external_feat)
 
-    return top_features
+    # Handle the different return formats from features_scoring_selection
+    if isinstance(result, tuple) and len(result) == 2:
+        # Check if it's the special case: ((ts_feats, ts_var), (ext_feats, ext_var))
+        if isinstance(result[0], tuple) and isinstance(result[1], tuple):
+            # Case when strategy='none' and select_external_feat=True
+            (ts_feats, ts_feats_var), (ext_feats, ext_feats_var) = result
+        else:
+            # Case when we have (features_list, variance_dict)
+            ts_feats, ts_feats_var = result
+            if external_feat is not None:
+                ext_cols = set(external_feat.columns)
+                actual_ts_feats = [feat for feat in ts_feats if feat not in ext_cols]
+                actual_ext_feats = [feat for feat in ts_feats if feat in ext_cols]
+
+                # Split variance accordingly
+                actual_ts_feats_var = {k: v for k, v in ts_feats_var.items() if k in actual_ts_feats}
+                ext_feats_var = {k: v for k, v in ts_feats_var.items() if k in actual_ext_feats}
+
+                ts_feats = actual_ts_feats
+                ext_feats = actual_ext_feats
+                ts_feats_var = actual_ts_feats_var
+            else:
+                ext_feats = []
+                ext_feats_var = {}
+    else:
+        # Fallback case - shouldn't happen with the new implementation
+        ts_feats = result if isinstance(result, list) else []
+        ts_feats_var = {}
+        ext_feats = []
+        ext_feats_var = {}
+
+    return {
+        "ts_feats": ts_feats,
+        "ts_feats_var": ts_feats_var,
+        "ext_feats": ext_feats,
+        "ext_feats_var": ext_feats_var
+    }
 
 
 def features_simple_selection(df: pd.DataFrame, labels: list, top_k: int = 20, external_feat: pd.DataFrame = None):
@@ -136,27 +172,35 @@ def features_scoring_selection(df: pd.DataFrame, labels: list, mode: str = 'simp
     else:
         raise ValueError('Strategy {} is not supported'.format(strategy))
 
-    feats_value = get_pfa_score(df, ex, mode, pfa_values, top_k)
+    # Get both features and their PFA variance
+    feats_value, feats_variance = get_pfa_score(df, ex, mode, pfa_values, top_k)
+
     if strategy == "none" and external_feat is not None and select_external_feat:
         feats_value_ts = feats_value
-        feats_value_ext = get_pfa_score(external_feat, ex_ext, mode, pfa_values, top_k_ext)
+        feats_variance_ts = feats_variance
+        feats_value_ext, feats_variance_ext = get_pfa_score(external_feat, ex_ext, mode, pfa_values, top_k_ext)
 
-        return list(feats_value_ts.keys()), list(feats_value_ext.keys())
+        return (list(feats_value_ts.keys()), feats_variance_ts), (list(feats_value_ext.keys()), feats_variance_ext)
     else:
-        return list(feats_value.keys())
+        return list(feats_value.keys()), feats_variance
 
 
 def get_pfa_score(df, ex, mode, pfa_values, top_k):
     top_k_feat = {}
     feats_value = {}
+    feats_variance = {}  # Track variance information
+
     if mode == 'simple':
         for x in ex[:top_k].index:
             top_k_feat[x] = list(df[x])
         featOrd = pd.DataFrame(top_k_feat)
-        # print(featOrd)
         feats_choosed, weight_feats = pfa_scoring(featOrd, pfa_values)
-        for x in feats_choosed:
+
+        # Store both feature values and their PFA weights/variance
+        for i, x in enumerate(feats_choosed):
             feats_value[x] = list(df[x])
+            feats_variance[x] = weight_feats[i] if i < len(weight_feats) else 0
+
     elif mode == 'domain':
         feat_domain = {}
         feats_choosed = {}
@@ -166,14 +210,20 @@ def get_pfa_score(df, ex, mode, pfa_values, top_k):
                 feat_domain[domain] = {}
             if len(feat_domain[domain]) < top_k:
                 feat_domain[domain][x] = list(df[x])
-        # print(feat_domain.keys())
+
         for key in feat_domain.keys():
             featOrd = pd.DataFrame(feat_domain[key])
             feats_choosed[key], weight_feats = pfa_scoring(featOrd, pfa_values)
+
+            # Store variance for each domain
+            for i, feat_name in enumerate(feats_choosed[key]):
+                feats_variance[feat_name] = weight_feats[i] if i < len(weight_feats) else 0
+
         for type_feat in feats_choosed.keys():
             for key in feats_choosed[type_feat]:
                 feats_value[key] = list(df[key])
-    return feats_value
+
+    return feats_value, feats_variance
 
 
 def pfa_scoring(df: pd.DataFrame, expl_var_selection: float):

@@ -9,26 +9,26 @@ from kneed import KneeLocator
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-from time2feat.utils.importance_old import feature_selection
-from time2feat.extraction.extractor import feature_extraction
-from time2feat.model.clustering import ClusterWrapper
+from time2feat.time2feat.utils.importance_old import feature_selection
+from time2feat.time2feat.extraction.extractor import feature_extraction
+from time2feat.time2feat.model.clustering import ClusterWrapper
 
 
 class Time2Feat(object):
 
     def __init__(
-        self,
-        n_clusters: Optional[int] = None,
-        batch_size=100,
-        p=1,
-        model_type="KMeans",
-        transform_type="std",
-        score_mode="simple",
-        strategy="sk_base",
-        k_best=False,
-        pre_transform=False,
-        top_k=None,
-        pfa_value=0.9,
+            self,
+            n_clusters: Optional[int] = None,
+            batch_size=100,
+            p=1,
+            model_type="KMeans",
+            transform_type="std",
+            score_mode="simple",
+            strategy="sk_base",
+            k_best=False,
+            pre_transform=False,
+            top_k=None,
+            pfa_value=0.9,
     ):
         """
         Initialize time2feat method with specified parameters.
@@ -67,12 +67,12 @@ class Time2Feat(object):
         self.top_ext_feats_variance = None
 
     def fit(
-        self,
-        X,
-        labels=None,
-        external_feat: pd.DataFrame = None,
-        select_external_feat: bool = False,
-        save_features_extracted: str = "last_experiment",
+            self,
+            X,
+            labels=None,
+            external_feat: pd.DataFrame = None,
+            select_external_feat: bool = False,
+            save_features_extracted: str = "last_experiment",
     ):
         if labels is None:
             labels = dict()
@@ -207,12 +207,12 @@ class Time2Feat(object):
         return self.y_pred
 
     def fit_predict(
-        self,
-        X,
-        labels=None,
-        external_feat: pd.DataFrame = None,
-        select_external_feat: bool = False,
-        save_features_extracted: str = "last_experiment",
+            self,
+            X,
+            labels=None,
+            external_feat: pd.DataFrame = None,
+            select_external_feat: bool = False,
+            save_features_extracted: str = "last_experiment",
     ):
         if labels is None:
             labels = {}
